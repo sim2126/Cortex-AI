@@ -1,0 +1,13 @@
+{
+  "versions": [
+    {
+      "version": 1,
+      "createdAt": "2023-10-27T10:00:00Z",
+      "ontology": {
+        "node_types": ["Person", "Organization", "Technology", "Location", "Concept"],
+        "edge_labels": ["CEO_OF", "WORKS_AT", "ACQUIRED", "LOCATED_IN", "FOUNDED", "USES"]
+      }
+    }
+  ],
+  "latest_version": 1
+}
