@@ -1,5 +1,15 @@
-
 # Python virtual environment
 .venv/
+
 # Environment variables
 .env
+
+# --- Next.js UI ---
+# Dependency directories
+ui/node_modules/
+
+# Build directory
+ui/.next/
+
+# Local environment variables
+ui/.env.local

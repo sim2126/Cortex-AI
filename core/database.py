@@ -10,12 +10,12 @@ from core.models import KnowledgeGraph
 class GraphDBInterface(ABC):
     """
     An abstract base class defining the standard interface for interacting with a graph database.
-    This allows for pluggable backends (e.g., Neo4j, AWS Neptune).
     """
     @abstractmethod
     def write_graph(self, graph: KnowledgeGraph):
         pass
 
+    # ... (other abstract methods are unchanged)
     @abstractmethod
     def execute_query(self, query: str, params: Dict = None) -> List[Dict[str, Any]]:
         pass
@@ -32,6 +32,7 @@ class GraphDBInterface(ABC):
     def close(self):
         pass
 
+
 class Neo4jDatabase(GraphDBInterface):
     """Concrete implementation of the GraphDBInterface for Neo4j."""
     def __init__(self):
@@ -43,45 +44,45 @@ class Neo4jDatabase(GraphDBInterface):
         self._driver = GraphDatabase.driver(uri, auth=(user, password))
 
     def write_graph(self, graph: KnowledgeGraph):
+        """
+        Writes a knowledge graph to the database, correctly applying dynamic labels.
+        """
         with self._driver.session() as session:
-            # Write nodes
             for node in graph.nodes:
+                # --- THIS IS THE CORRECTED NODE QUERY ---
+                # It now dynamically sets the node's type (e.g., :Organization) as a label.
+                # It also adds the generic :Entity label for broader queries.
+                cypher = f"""
+                MERGE (n:`{node.type}` {{id: $id}})
+                ON CREATE SET n.embedding = $embedding
+                SET n += {{type: $type}}
+                SET n:Entity
+                """
                 session.run(
-                    "MERGE (n:Entity {id: $id}) SET n.type = $type, n.embedding = $embedding", 
+                    cypher,
                     id=node.id, type=node.type, embedding=node.embedding
                 )
-            
-            # Write edges - Fixed to avoid KeyError
             for edge in graph.edges:
-                # Use parameterized query with relationship type
-                query = """
-                MATCH (a:Entity {id: $source})
-                MATCH (b:Entity {id: $target})
-                CALL apoc.merge.relationship(a, $label, {}, {}, b, {})
-                YIELD rel
-                RETURN rel
+                # --- THIS IS THE CORRECTED EDGE QUERY ---
+                # It now matches nodes by their 'id' property regardless of label.
+                cypher = f"""
+                MATCH (a {{id: $source}})
+                MATCH (b {{id: $target}})
+                MERGE (a)-[r:`{edge.label}`]->(b)
                 """
-                try:
-                    session.run(query, source=edge.source, target=edge.target, label=edge.label)
-                except Exception as e:
-                    # Fallback if APOC is not available
-                    print(f"APOC not available, using alternative method for edge: {edge.label}")
-                    # Escape the relationship type properly
-                    safe_label = edge.label.replace('`', '')
-                    fallback_query = f"""
-                    MATCH (a:Entity {{id: $source}})
-                    MATCH (b:Entity {{id: $target}})
-                    MERGE (a)-[r:`{safe_label}`]->(b)
-                    RETURN r
-                    """
-                    session.run(fallback_query, source=edge.source, target=edge.target)
+                session.run(
+                    cypher,
+                    source=edge.source, target=edge.target
+                )
 
     def execute_query(self, query: str, params: Dict = None) -> List[Dict[str, Any]]:
+        # ... (this function is unchanged)
         with self._driver.session() as session:
             result = session.run(query, params or {})
             return result.data()
 
     def ensure_vector_index(self, index_name: str, node_label: str, property_name: str, dimensions: int):
+        # ... (this function is unchanged)
         with self._driver.session() as session:
             session.run(f"""
             CREATE VECTOR INDEX `{index_name}` IF NOT EXISTS
@@ -94,6 +95,7 @@ class Neo4jDatabase(GraphDBInterface):
         print(f"Neo4j vector index '{index_name}' ensured.")
 
     def find_similar_node(self, index_name: str, node_embedding: List[float], similarity_threshold: float) -> Dict[str, Any] | None:
+        # ... (this function is unchanged)
         query = """
         CALL db.index.vector.queryNodes($index_name, 1, $embedding)
         YIELD node, score
@@ -110,4 +112,5 @@ class Neo4jDatabase(GraphDBInterface):
             return result.single()
 
     def close(self):
+        # ... (this function is unchanged)
         self._driver.close()

@@ -47,6 +47,7 @@ class TestAgentLogic(unittest.TestCase):
         mock_plan = MagicMock()
         mock_plan.query_type = "informational"
         mock_plan.plan = "Route to the appropriate tool."
+
         
         # Mocking the final answer generation
         final_answer_chain = MagicMock()

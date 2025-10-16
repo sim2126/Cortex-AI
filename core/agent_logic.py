@@ -72,15 +72,16 @@ def planner(state: AgentState):
         "streaming_thought": f"I have formulated a plan:\n{plan_str}"
     }
 
+# In core/agent_logic.py, replace the existing execute_tool function with this one.
+
 def execute_tool(state: AgentState):
     """
-    Routes and executes the current sub-query.
+    Routes and executes the current sub-query with more robust logic.
     """
     plan = json.loads(state["plan"])
     index = state["current_sub_query_index"]
     query = plan["sub_queries"][index]
     
-    # Check for dependencies and inject results from previous steps
     dependency_index = plan["dependencies"][index]
     if dependency_index != -1:
         previous_result = state["sub_query_results"][dependency_index]
@@ -88,28 +89,37 @@ def execute_tool(state: AgentState):
         
     yield {"streaming_thought": f"Executing step {index + 1}: {query}"}
     
-    # Route the current sub-query
     router = get_router_chain()
     route = router.invoke({"question": query})
-    datasource = route.datasource
+    datasource = route.datasource.lower() # Convert to lowercase for safety
     
     tool_output = ""
-    if datasource == 'vectorstore':
+    # --- THIS IS THE ROBUST LOGIC ---
+    # We now check if the keyword is 'in' the datasource string.
+    if 'vectorstore' in datasource:
+        yield {"streaming_thought": "Decision: Performing vector search."}
         results = query_vector_store(query)
         tool_output = "\n\n".join([doc.page_content for doc in results])
-    elif datasource == 'graph':
+    elif 'graph' in datasource:
+        yield {"streaming_thought": "Decision: Querying knowledge graph."}
         results, _ = query_knowledge_graph(query)
-        tool_output = ", ".join([list(row.values())[0] for row in results if row])
-    elif datasource == 'logical_filter':
+        tool_output = ", ".join([str(list(row.values())[0]) for row in results if row and row.values()])
+    elif 'logical_filter' in datasource:
+        yield {"streaming_thought": "Decision: Applying logical filter."}
         results, _ = query_knowledge_graph(query, filter_model=route.filter)
-        tool_output = ", ".join([list(row.values())[0] for row in results if row])
+        tool_output = ", ".join([str(list(row.values())[0]) for row in results if row and row.values()])
+    else:
+        # Fallback if the router gives an unexpected output
+        yield {"streaming_thought": "Warning: Router gave an unknown datasource. Defaulting to vector search."}
+        results = query_vector_store(query)
+        tool_output = "\n\n".join([doc.page_content for doc in results])
 
     current_results = state["sub_query_results"]
     current_results[index] = tool_output
     
     yield {
         "sub_query_results": current_results,
-        "streaming_thought": f"Step {index + 1} complete. Result: {tool_output[:200]}..."
+        "streaming_thought": f"Step {index + 1} complete. Found: {tool_output[:200]}..."
     }
 
 def generate_response(state: AgentState):
