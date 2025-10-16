@@ -15,7 +15,6 @@ class GraphDBInterface(ABC):
     def write_graph(self, graph: KnowledgeGraph):
         pass
 
-    # ... (other abstract methods are unchanged)
     @abstractmethod
     def execute_query(self, query: str, params: Dict = None) -> List[Dict[str, Any]]:
         pass
@@ -49,9 +48,6 @@ class Neo4jDatabase(GraphDBInterface):
         """
         with self._driver.session() as session:
             for node in graph.nodes:
-                # --- THIS IS THE CORRECTED NODE QUERY ---
-                # It now dynamically sets the node's type (e.g., :Organization) as a label.
-                # It also adds the generic :Entity label for broader queries.
                 cypher = f"""
                 MERGE (n:`{node.type}` {{id: $id}})
                 ON CREATE SET n.embedding = $embedding
@@ -63,8 +59,6 @@ class Neo4jDatabase(GraphDBInterface):
                     id=node.id, type=node.type, embedding=node.embedding
                 )
             for edge in graph.edges:
-                # --- THIS IS THE CORRECTED EDGE QUERY ---
-                # It now matches nodes by their 'id' property regardless of label.
                 cypher = f"""
                 MATCH (a {{id: $source}})
                 MATCH (b {{id: $target}})
@@ -76,13 +70,11 @@ class Neo4jDatabase(GraphDBInterface):
                 )
 
     def execute_query(self, query: str, params: Dict = None) -> List[Dict[str, Any]]:
-        # ... (this function is unchanged)
         with self._driver.session() as session:
             result = session.run(query, params or {})
             return result.data()
 
     def ensure_vector_index(self, index_name: str, node_label: str, property_name: str, dimensions: int):
-        # ... (this function is unchanged)
         with self._driver.session() as session:
             session.run(f"""
             CREATE VECTOR INDEX `{index_name}` IF NOT EXISTS
@@ -95,7 +87,6 @@ class Neo4jDatabase(GraphDBInterface):
         print(f"Neo4j vector index '{index_name}' ensured.")
 
     def find_similar_node(self, index_name: str, node_embedding: List[float], similarity_threshold: float) -> Dict[str, Any] | None:
-        # ... (this function is unchanged)
         query = """
         CALL db.index.vector.queryNodes($index_name, 1, $embedding)
         YIELD node, score
@@ -112,5 +103,4 @@ class Neo4jDatabase(GraphDBInterface):
             return result.single()
 
     def close(self):
-        # ... (this function is unchanged)
         self._driver.close()

@@ -19,9 +19,21 @@ class Filter(BaseModel):
     property: str = Field(description="The property of the node to filter on (e.g., 'location', 'name').")
     value: str = Field(description="The value to filter for.")
 
-def query_vector_store(query: str, k: int = 3):
+def query_vector_store(query: str, k: int = 8): # Increased k from 3 to 8
+    """
+    Queries the vector store for the most relevant documents.
+    We've increased the number of documents (k) to 8 to provide more context.
+    """
+    vector_store_path = settings.VECTOR_STORE_PATH
+    if not os.path.exists(os.path.join(vector_store_path, "index.faiss")):
+        return [] # Return empty if the knowledge base is empty
+
     embeddings_model = GoogleGenerativeAIEmbeddings(model=settings.EMBEDDING_MODEL)
-    vector_store = FAISS.load_local(VECTOR_STORE_PATH, embeddings_model, allow_dangerous_deserialization=True)
+    vector_store = FAISS.load_local(
+        vector_store_path,
+        embeddings_model,
+        allow_dangerous_deserialization=True
+    )
     return vector_store.similarity_search(query, k=k)
 
 def get_graph_schema():

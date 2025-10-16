@@ -16,7 +16,7 @@ class EntityResolver:
             index_name='entity_embeddings',
             node_label='Entity',
             property_name='embedding',
-            dimensions=768 # Gemini embedding dimensions
+            dimensions=768 
         )
 
     def find_similar_node(self, node_embedding: List[float]) -> Dict[str, Any] | None:

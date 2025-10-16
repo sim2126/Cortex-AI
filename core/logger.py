@@ -8,7 +8,6 @@ def get_logger(name: str):
     """
     logger = logging.getLogger(name)
     
-    # Prevent duplicate handlers if the logger is already configured
     if logger.handlers:
         return logger
         
@@ -16,7 +15,6 @@ def get_logger(name: str):
     
     handler = logging.StreamHandler(sys.stdout)
     
-    # Use a custom format for the JSON logs
     formatter = jsonlogger.JsonFormatter(
         '%(asctime)s %(name)s %(levelname)s %(message)s'
     )

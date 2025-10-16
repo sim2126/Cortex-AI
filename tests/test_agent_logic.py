@@ -1,11 +1,9 @@
-# /tests/test_agent_logic.py
 
 import unittest
 from unittest.mock import patch, MagicMock
 import sys
 import os
 
-# Add root directory to path to allow imports from 'core'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.agent_logic import app as cortex_ai_agent, AgentState
@@ -26,20 +24,16 @@ class TestAgentLogic(unittest.TestCase):
         """
         Tests the full agent flow for a question that should be routed to the knowledge graph.
         """
-        # --- Arrange ---
 
-        # 1. Mock the router to always choose the 'graph' tool
         mock_router_response = MagicMock()
         mock_router_response.datasource = 'graph'
         mock_router_chain = MagicMock()
         mock_router_chain.invoke.return_value = mock_router_response
         mock_get_router.return_value = mock_router_chain
 
-        # 2. Mock the knowledge graph to return a specific result
         mock_kg_result = ([{'company': 'Instagram'}, {'company': 'WhatsApp'}], "MATCH (n) RETURN n")
         mock_query_kg.return_value = mock_kg_result
         
-        # 3. Mock the final response generation LLM
         mock_llm_instance = MagicMock()
         mock_llm_instance.with_structured_output.return_value = mock_llm_instance # for planner
         
@@ -79,14 +73,11 @@ class TestAgentLogic(unittest.TestCase):
 
         # --- Assert ---
         
-        # Verify that the router was called correctly
         mock_get_router.return_value.invoke.assert_called_with({"question": inputs["question"]})
         
-        # Verify that the knowledge graph was queried (and the vector store was not)
         mock_query_kg.assert_called_once_with(inputs["question"])
         mock_query_vs.assert_not_called()
         
-        # Verify the final answer is what we expect
         self.assertIn("Instagram", final_state["answer"])
         self.assertIn("WhatsApp", final_state["answer"])
         self.assertEqual(final_state["datasource"], "graph")

@@ -6,16 +6,13 @@ import requests
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
-# This is the corrected line
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
-# Import the models from the new 'models.py' file
 from core.models import Node, Edge, KnowledgeGraph, Ontology
 from core.database import Neo4jDatabase
 from core.entity_resolver import EntityResolver
 from core.config import settings
 
-# --- Ontology Logic (Refactored) ---
 def get_latest_ontology() -> Ontology:
     """Fetches the latest ontology from our API service."""
     print("--- Fetching Latest Ontology from Service ---")

@@ -1,181 +1,153 @@
-from typing import TypedDict, List, Tuple, Literal, Any, Optional
+from typing import TypedDict, Literal
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from pydantic import BaseModel, Field
-import json
 
-from core.retriever import query_vector_store, query_knowledge_graph, Filter
-from core.router import get_router_chain
-from core.logger import get_logger
+from core.retriever import query_vector_store
 from core.config import settings
+from core.logger import get_logger
 
 logger = get_logger(__name__)
 
-# --- Pydantic Models for Structured LLM Calls ---
-class Grade(BaseModel):
-    """A model for grading the sufficiency of a generated answer."""
-    is_sufficient: bool = Field(description="True if the answer directly and completely addresses the user's question. False otherwise.")
-    reasoning: str = Field(description="A brief explanation of why the answer is or is not sufficient.")
+# --- Pydantic Models for a more robust planner ---
+class RAGPlan(BaseModel):
+    """The plan for executing a request."""
+    query_type: Literal["conversational", "informational"] = Field(
+        description="The classification of the user's query: either 'conversational' (a greeting, thank you, etc.) or 'informational' (a question seeking knowledge)."
+    )
+    search_query: str = Field(
+        description="For 'informational' queries, a concise, keyword-focused query optimized for vector database retrieval. For 'conversational' queries, this can be an empty string."
+    )
 
-class DecomposedQuery(BaseModel):
-    """Represents a multi-step query plan."""
-    sub_queries: List[str] = Field(description="A list of sub-queries to execute in sequence.")
-    dependencies: List[int] = Field(description="A list where dependencies[i] is the index of the sub_query that sub_query[i] depends on, or -1 if it has no dependency.")
-
-# --- Enhanced Agent State ---
+# --- Agent State ---
 class AgentState(TypedDict):
     question: str
-    plan: str
-    sub_query_results: List[Any]
-    current_sub_query_index: int
+    search_query: str
+    context: str
     answer: str
-    # Streamed output for the client
-    streaming_thought: str
 
-# --- Agent Nodes (Upgraded and New) ---
+# --- Agent Nodes (Final Version with Conversational Check) ---
 
-def planner(state: AgentState):
+def query_planner(state: AgentState):
     """
-    The entry point of the agent. Decomposes the query into a multi-step plan if necessary.
+    The new entry point. It first classifies the user's intent.
+    If conversational, it provides a direct answer.
+    If informational, it creates an optimized search query.
     """
-    logger.info("--- PLANNER: Creating execution plan ---")
-    yield {"streaming_thought": "Analyzing the query and forming a plan..."}
+    logger.info("--- QUERY PLANNER: Classifying intent and generating search query ---")
     
     llm = ChatGoogleGenerativeAI(model=settings.FAST_MODEL, temperature=0)
     prompt = ChatPromptTemplate.from_messages([
         ("system", """
-        You are an expert query planner. Your task is to decompose a complex user query into a series of simpler, executable sub-queries.
-        - If the query is simple and can be answered in one step, return a single sub-query.
-        - If the query requires multiple steps (e.g., finding X, then using X to find Y), break it down.
-        - Define dependencies. For "What companies were founded by people who attended Harvard?", the plan should be:
-          1. "Find people who attended Harvard."
-          2. "Find companies founded by the people from step 1."
-          The dependency for query 2 would be 0.
-
-        Return a structured plan.
+        You are an expert at classifying user intent and optimizing queries.
+        First, determine if the user's input is 'conversational' (like 'hello', 'thank you') or 'informational' (a question).
+        
+        - If 'conversational', set query_type to 'conversational' and search_query to an empty string.
+        - If 'informational', set query_type to 'informational' and generate a concise search query based on the user's question.
         """),
-        ("human", "User Question: {question}")
+        ("human", "User Input: {question}")
     ])
     
-    chain = prompt | llm.with_structured_output(DecomposedQuery)
+    chain = prompt | llm.with_structured_output(RAGPlan)
     result = chain.invoke({"question": state['question']})
     
-    plan_str = "\n".join(f"{i+1}. {q}" for i, q in enumerate(result.sub_queries))
-    logger.info(f"  - Plan:\n{plan_str}")
+    if result.query_type == "conversational":
+        logger.info("  - Intent: Conversational. Responding directly.")
+        # For a conversational query, we set the answer directly and skip the RAG pipeline.
+        return {
+            "answer": "Hello! I'm Cortex, your personal RAG agent. You can ask me questions about the documents you've uploaded."
+        }
     
-    yield {
-        "plan": json.dumps({"sub_queries": result.sub_queries, "dependencies": result.dependencies}),
-        "current_sub_query_index": 0,
-        "sub_query_results": [None] * len(result.sub_queries),
-        "streaming_thought": f"I have formulated a plan:\n{plan_str}"
-    }
+    logger.info(f"  - Intent: Informational. Optimized Search Query: {result.search_query}")
+    return {"search_query": result.search_query}
 
-# In core/agent_logic.py, replace the existing execute_tool function with this one.
-
-def execute_tool(state: AgentState):
+def retrieve_context(state: AgentState):
     """
-    Routes and executes the current sub-query with more robust logic.
+    Retrieves relevant context from the vector store using the optimized search query.
     """
-    plan = json.loads(state["plan"])
-    index = state["current_sub_query_index"]
-    query = plan["sub_queries"][index]
+    logger.info("--- RETRIEVER: Fetching context from vector store ---")
     
-    dependency_index = plan["dependencies"][index]
-    if dependency_index != -1:
-        previous_result = state["sub_query_results"][dependency_index]
-        query = f"{query} (Context: {previous_result})"
-        
-    yield {"streaming_thought": f"Executing step {index + 1}: {query}"}
+    results = query_vector_store(state['search_query'])
+    if not results:
+        logger.warning("  - No context found in vector store.")
+        return {"context": ""}
     
-    router = get_router_chain()
-    route = router.invoke({"question": query})
-    datasource = route.datasource.lower() # Convert to lowercase for safety
-    
-    tool_output = ""
-    # --- THIS IS THE ROBUST LOGIC ---
-    # We now check if the keyword is 'in' the datasource string.
-    if 'vectorstore' in datasource:
-        yield {"streaming_thought": "Decision: Performing vector search."}
-        results = query_vector_store(query)
-        tool_output = "\n\n".join([doc.page_content for doc in results])
-    elif 'graph' in datasource:
-        yield {"streaming_thought": "Decision: Querying knowledge graph."}
-        results, _ = query_knowledge_graph(query)
-        tool_output = ", ".join([str(list(row.values())[0]) for row in results if row and row.values()])
-    elif 'logical_filter' in datasource:
-        yield {"streaming_thought": "Decision: Applying logical filter."}
-        results, _ = query_knowledge_graph(query, filter_model=route.filter)
-        tool_output = ", ".join([str(list(row.values())[0]) for row in results if row and row.values()])
-    else:
-        # Fallback if the router gives an unexpected output
-        yield {"streaming_thought": "Warning: Router gave an unknown datasource. Defaulting to vector search."}
-        results = query_vector_store(query)
-        tool_output = "\n\n".join([doc.page_content for doc in results])
-
-    current_results = state["sub_query_results"]
-    current_results[index] = tool_output
-    
-    yield {
-        "sub_query_results": current_results,
-        "streaming_thought": f"Step {index + 1} complete. Found: {tool_output[:200]}..."
-    }
+    context = "\n\n---\n\n".join([doc.page_content for doc in results])
+    logger.info(f"  - Retrieved context (first 200 chars): {context[:200]}...")
+    return {"context": context}
 
 def generate_response(state: AgentState):
-    """The final step: synthesize an answer from the collected results."""
-    yield {"streaming_thought": "All steps are complete. Synthesizing the final answer..."}
+    """
+    Generates a final answer, strictly adhering to the provided context.
+    """
+    logger.info("--- RESPONDER: Generating final answer ---")
     
-    llm = ChatGoogleGenerativeAI(model=settings.GENERATION_MODEL, temperature=0)
+    llm = ChatGoogleGenerativeAI(model=settings.GENERATION_MODEL, temperature=0.1)
+    
     prompt_template = """
-    You are Cortex AI. Synthesize a clear and direct answer to the user's original question based ONLY on the context from the executed steps.
-    
-    Original Question: {question}
+    You are Cortex AI, a helpful AI assistant. Your task is to provide a detailed and well-structured answer to the user's question based *only* on the context provided below.
 
-    Context from Executed Steps:
+    **Strict Rules:**
+    1.  Adhere exclusively to the provided context. Do not use any external knowledge.
+    2.  If the context has enough information, synthesize a comprehensive answer.
+    3.  If the context is empty or insufficient, you MUST respond with the following exact phrase:
+        "Currently, I can only help with the documents you have uploaded or the web links you have provided. Please ingest a relevant source to answer this question."
+
+    **Context from Knowledge Base:**
     ---
     {context}
     ---
 
-    Based *only* on the context above, provide a direct answer to the question.
+    **User's Question:** {question}
+
+    **Comprehensive Answer:**
     """
-    
-    context = "\n".join([f"Step {i+1} Result: {res}" for i, res in enumerate(state['sub_query_results'])])
     
     prompt = ChatPromptTemplate.from_template(prompt_template)
     chain = prompt | llm | StrOutputParser()
-    answer = chain.invoke({"question": state['question'], "context": context})
-    yield {"answer": answer, "streaming_thought": "Done."}
+    
+    answer = chain.invoke({
+        "question": state['question'],
+        "context": state['context']
+    })
+    
+    logger.info(f"  - Generated Answer: {answer}")
+    return {"answer": answer}
 
-def should_continue_planning(state: AgentState):
-    plan = json.loads(state["plan"])
-    current_index = state["current_sub_query_index"]
-    if current_index + 1 < len(plan["sub_queries"]):
-        return "continue"
-    else:
+# --- Conditional Edge ---
+def decide_to_retrieve(state: AgentState):
+    """
+    Decides whether to proceed with context retrieval or to end the process.
+    If the planner set an answer directly (for conversational queries), we end.
+    """
+    if "answer" in state and state["answer"]:
         return "end"
-
-def advance_to_next_step(state: AgentState):
-    """Advances the index to the next sub-query."""
-    current_index = state.get("current_sub_query_index", 0)
-    return {"current_sub_query_index": current_index + 1}
-
+    else:
+        return "continue"
 
 # --- Build and Compile the Graph ---
 workflow = StateGraph(AgentState)
-workflow.add_node("planner", planner)
-workflow.add_node("execute_tool", execute_tool)
-workflow.add_node("advance_step", advance_to_next_step)
+
+workflow.add_node("planner", query_planner)
+workflow.add_node("retriever", retrieve_context)
 workflow.add_node("responder", generate_response)
 
 workflow.set_entry_point("planner")
-workflow.add_edge("planner", "execute_tool")
-workflow.add_edge("advance_step", "execute_tool")
+
+# New conditional routing after the planner
 workflow.add_conditional_edges(
-    "execute_tool",
-    should_continue_planning,
-    {"continue": "advance_step", "end": "responder"}
+    "planner",
+    decide_to_retrieve,
+    {
+        "continue": "retriever",
+        "end": END
+    }
 )
-workflow.add_edge("responder", END)
+
+workflow.add_edge("retriever", "responder")
+workflow.set_finish_point("responder")
 
 app = workflow.compile()
+
